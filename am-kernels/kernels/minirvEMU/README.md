@@ -78,14 +78,23 @@ python3 find_halt.py mem.bin            # -> 0x1218
 #    ROM[0x1218 >> 2] = 0x00100073;
 
 # 4. 编译并运行（和 screensaver 一样走 AM 的 Makefile，产物在 build/ 下）
-make ARCH=native                                # -> build/EMU_mem-native.elf
-mainargs="mem.bin 0x1218" make ARCH=native run  # 编译 + 运行
-./build/EMU_mem-native.elf                      # 也可直接跑（默认镜像 vga.bin）
+make ARCH=native                 # -> build/EMU_mem-native.elf
+./build/EMU_mem-native.elf       # 或 make ARCH=native run
 ```
 
-> `main` 的签名是 AM 规定的 `int main(const char *args)`：AM 的 native 平台由
-> `am/src/native/platform.c` 的构造函数用 `main(getenv("mainargs") ?: "")` 调用
-> kernel，拿不到 `argc/argv`。所以参数用 `mainargs` 传入，格式是“镜像名 [halt 地址]”。
+镜像名和 halt 补丁地址都写死在 `EMU_mem.c` 的 `main()` 里，换镜像时改这两行：
+
+```c
+const char *instruction_sequence = "vga.bin";
+//ROM[0x1218 >> 2] = 0x00100073;   // 测 mem.bin 时放开，地址换成 find_halt.py 给的
+```
+
+> 补丁默认注释掉：`vga.bin` 自带 `ebreak`，而 `0x1218` 落在它的代码里，硬补会跑飞
+> （实测会直接打 `程序没有写过显存`）。`mem.bin` / `sum.bin` 结尾是自旋，才需要补丁。
+>
+> `main` 只写 `int main()`（和 screensaver 一致）：AM 的 native 平台由
+> `am/src/native/platform.c` 的构造函数用 `main(mainargs)` 调 kernel，
+> kernel 拿不到 `argc/argv`，我们也不需要它。
 
 ## 已知镜像
 

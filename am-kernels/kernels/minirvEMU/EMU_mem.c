@@ -2,7 +2,6 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <sys/types.h>
 #include <stdbool.h>
 #include <am.h>				//它声明了io_write
@@ -74,16 +73,11 @@ static inline int in_vga(uint32_t addr) {
 	return addr - VGA_BASE < VGA_SIZE;
 }
 
-/* 写显存：nbytes = 4 (SW) 或 1 (SB) */
-static void vga_store(uint32_t addr, uint32_t data, int nbytes) {
-	uint32_t off = addr - VGA_BASE;
-	if (nbytes == 4) {
-		VGA_VM[off >> 2] = data & 0x00FFFFFFu;      /* 硬件丢高 8 位 */
-	} else {
-		uint32_t *p  = &VGA_VM[off >> 2];           /* 字节使能：读-改-写 */
-		uint32_t  sh = (off & 3) * 8;
-		*p = ((*p & ~(0xFFu << sh)) | ((data & 0xFFu) << sh)) & 0x00FFFFFFu;
-	}
+/* 写显存：图形显示只用 SW（一个字一个像素），所以没有字节使能那一套。
+ * mkvga.py 只发 SW；vga.bin 实测写入显存的指令也是 100% SW（SW=65536, SB=0）。
+ */
+static void vga_store(uint32_t addr, uint32_t data) {
+	VGA_VM[(addr - VGA_BASE) >> 2] = data & 0x00FFFFFFu;   /* 硬件丢高 8 位 */
 	vga_dirty = 1;
 }
 
@@ -190,7 +184,7 @@ void inst_cycle(void){
             case 0b010:{
 				uint32_t addr = GPR[rs1] + (uint32_t)imm;
 				if (in_vga(addr)) {
-					vga_store(addr, GPR[rs2], 4);   /* SW：写一个像素，低 24 位有效 */
+					vga_store(addr, GPR[rs2]);   /* SW：写一个像素，低 24 位有效 */
 				} else {
 					//先把拼好数imm左移20位是为了顶到31位，使得>>算数右移是符号拓展
 					RAM[(GPR[rs1] + (uint32_t)imm) >> 2] = GPR[rs2]; // 改：基址用 GPR[rs1]，符号扩展立即数，按字寻址    
@@ -200,7 +194,9 @@ void inst_cycle(void){
 
             case 0b000:{
                 uint32_t addr = GPR[rs1] + (uint32_t)imm; // 改：只改目标字节，读-改-写
-                if (in_vga(addr)) { vga_store(addr, GPR[rs2], 1); break; }   /* SB 写显存 */
+                /* 图形显示只用 SW，SB 打到显存这一路不再支持：直接忽略。
+                   （这个判断不能删，否则会落到下面按 RAM 寻址，越界写 0x20000000>>2）*/
+                if (in_vga(addr)) break;
                 if (addr == 0x10000000u) {                                    /* 字符输出口 */
                     putchar((int)(GPR[rs2] & 0xFF)); fflush(stdout); break;
                 }
@@ -236,27 +232,11 @@ void inst_cycle(void){
 	PC = next_pc;
 }
 
-/* AM 的 native 平台不是由 C 运行库调 main(argc, argv)，而是由
- * am/src/native/platform.c 里的构造函数用 main(getenv("mainargs") ?: "")
- * 调用，所以 kernel 的入口签名固定是 int main(const char *args)。
- * args 是一个空格分隔的字符串：
- *     mainargs="mem.bin 0x1218" ./build/EMU_mem-native.elf
- */
-int main(const char *args){
+int main(){
 	ioe_init();   /* 和 screensaver 一样：先把 AM 的 IOE 初始化起来 */
 
-	char        argbuf[256] = {0};
-	const char *instruction_sequence = "vga.bin";
-	const char *halt_arg             = NULL;
-
-	if (args != NULL && *args != '\0') {
-		snprintf(argbuf, sizeof(argbuf), "%s", args);
-		char *p = strtok(argbuf, " ");
-		if (p != NULL) instruction_sequence = p;
-		halt_arg = strtok(NULL, " ");
-	}
-
 	//把程序镜像读进ROM
+	const char *instruction_sequence = "vga.bin";
 	FILE *ROM_fp = fopen(instruction_sequence, "rb");
 	if (ROM_fp == NULL) { perror(instruction_sequence); return 1; }//打开文件失败了
 	size_t size = fread(ROM, 1, sizeof(ROM), ROM_fp);
@@ -265,14 +245,11 @@ int main(const char *args){
 	for (size_t i = 0; i < size / 4; i++) RAM[i] = ROM[i];
 
 	//运行时环境补丁。约定程序结束前把状态码写入a0，并停在halt处。
-	/* 第二个参数给出 halt 的字节地址时才补 ebreak；
-	   不给则依赖镜像自带的 ebreak（mkvga.py 生成的测试镜像自带） */
-	if (halt_arg != NULL) {
-		uint32_t halt_addr = (uint32_t)strtoul(halt_arg, NULL, 0);
-		ROM[halt_addr >> 2] = 0x00100073; // ebreak
-		printf("已把 0x%x 处的自环替换成 ebreak\n", halt_addr);
-	}
-	
+	//把 halt 处的自环换成 ebreak（地址由 find_halt.py 给出，换镜像时改这里）。
+	//注意：vga.bin 自带 ebreak，不能补丁（0x1218 落在它的代码里，补了会跑飞），
+	//      所以这行默认注释掉；测 mem.bin / sum.bin 时再放开并改成对应地址。
+	//ROM[0x1218 >> 2] = 0x00100073; // ebreak
+  	
 	//什么时候循环会一直运行？
 	uint64_t steps = 0;
 	while (!halted && PC < size && steps++ < 200000000ull) {
@@ -300,7 +277,7 @@ int main(const char *args){
 	for (int i = 0; i < 12; i++)
 		printf("RAM[0x%05x] = 0x%08x\n", 0x49690 + i * 4, RAM[(0x49690 >> 2) + i]);
 
-	//最后把整块显存交给 AM 显示（screensaver 里也是每帧这一次调用）
+	//把整块显存交给 AM 显示（screensaver里也是每帧这一次调用）
 	if (vga_dirty) {
 		vga_show();
 		printf("画面已显示在窗口里，按回车退出\n");
