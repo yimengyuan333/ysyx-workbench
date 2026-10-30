@@ -2,10 +2,11 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/types.h>
 #include <stdbool.h>
-#include <am.h>            /* AM 的 io_write / AM_GPU_FBDRAW_T */
-#include <klib-macros.h>   /* io_write 宏 */
+#include <am.h>				//它声明了io_write
+#include <klib-macros.h>   	//定义了io_write
 
 //这是一个简单的宏拓展，相当于logisim的分线器（？用于从指令中取位
 #define GET_BITS(v, hi, lo)  (((v) >> (lo)) & ((1u << ((hi) - (lo) + 1)) - 1))
@@ -58,24 +59,13 @@ uint32_t RAM[1u << 24] = {0};
 uint32_t VGA_VM[VGA_W * VGA_H];	//显存，一共65536个字
 int      vga_dirty = 0;	//显示完毕标识
 
-/* ---- 显示：直接用 AM 的 GPU 接口（就是 screensaver 里那句调用的底层实现）----
- * am/src/native/ioe/gpu.c 已经把 SDL 窗口做好了：__am_gpu_init() 建窗口，
- * 它自己的定时器每秒 60 次把 surface 刷到窗口上；我们只要把显存当 pixels 传进去。
+/* ---- 显示：走 AM 的 IOE 接口，和 screensaver 的 draw() 是同一行 ----
+ * SDL 窗口和每帧刷屏都由 AM native 平台负责：
+ *   am/src/native/ioe.c       的分发表把 AM_GPU_FBDRAW 派给
+ *   am/src/native/ioe/gpu.c   的 __am_gpu_fbdraw()（窗口由 __am_gpu_init() 建）
+ * 所以这里不用声明底层函数，也不用自己写 ioe_read / ioe_write。
  */
-void __am_gpu_init(void);                     /* 来自 AM native 平台 */
-void __am_gpu_fbdraw(AM_GPU_FBDRAW_T *);
-
-/* AM 的 ioe 分发：我们只用得到 GPU 这一路 */
-void ioe_write(int reg, void *buf) {
-	if (reg == AM_GPU_FBDRAW)   __am_gpu_fbdraw(buf);
-}
-void ioe_read(int reg, void *buf) { (void)reg; (void)buf; }
-
-static int vga_inited = 0;
-
-/* 和 screensaver 的 draw() 里一模一样的一行：把整块显存交给 AM */
 static void vga_show(void) {
-	if (!vga_inited) { vga_inited = 1; __am_gpu_init(); }
 	io_write(AM_GPU_FBDRAW, 0, 0, VGA_VM, VGA_W, VGA_H, true);
 }
 
@@ -153,10 +143,9 @@ void inst_cycle(void){
 	}
 
 	case ADD: {
-		uint32_t funct7 = R_FUNCT7(inst);
+		// 目前只实现 funct7=0000000 & funct3=000 的 ADD，其余 R 型先不区分
 		uint32_t rs2 = R_RS2(inst);
 		uint32_t rs1 = R_RS1(inst);
-		uint32_t funct3 = R_FUNCT3(inst);
 		uint32_t rd = R_RD(inst);
 		GPR[rd] = GPR[rs1] + GPR[rs2];
 		break;
@@ -247,9 +236,27 @@ void inst_cycle(void){
 	PC = next_pc;
 }
 
-int main(int argc, char *argv[]){
+/* AM 的 native 平台不是由 C 运行库调 main(argc, argv)，而是由
+ * am/src/native/platform.c 里的构造函数用 main(getenv("mainargs") ?: "")
+ * 调用，所以 kernel 的入口签名固定是 int main(const char *args)。
+ * args 是一个空格分隔的字符串：
+ *     mainargs="mem.bin 0x1218" ./build/EMU_mem-native.elf
+ */
+int main(const char *args){
+	ioe_init();   /* 和 screensaver 一样：先把 AM 的 IOE 初始化起来 */
+
+	char        argbuf[256] = {0};
+	const char *instruction_sequence = "vga.bin";
+	const char *halt_arg             = NULL;
+
+	if (args != NULL && *args != '\0') {
+		snprintf(argbuf, sizeof(argbuf), "%s", args);
+		char *p = strtok(argbuf, " ");
+		if (p != NULL) instruction_sequence = p;
+		halt_arg = strtok(NULL, " ");
+	}
+
 	//把程序镜像读进ROM
-	const char *instruction_sequence = (argc > 1) ? argv[1] : "vga.bin";
 	FILE *ROM_fp = fopen(instruction_sequence, "rb");
 	if (ROM_fp == NULL) { perror(instruction_sequence); return 1; }//打开文件失败了
 	size_t size = fread(ROM, 1, sizeof(ROM), ROM_fp);
@@ -260,8 +267,8 @@ int main(int argc, char *argv[]){
 	//运行时环境补丁。约定程序结束前把状态码写入a0，并停在halt处。
 	/* 第二个参数给出 halt 的字节地址时才补 ebreak；
 	   不给则依赖镜像自带的 ebreak（mkvga.py 生成的测试镜像自带） */
-	if (argc > 2) {
-		uint32_t halt_addr = (uint32_t)strtoul(argv[2], NULL, 0);
+	if (halt_arg != NULL) {
+		uint32_t halt_addr = (uint32_t)strtoul(halt_arg, NULL, 0);
 		ROM[halt_addr >> 2] = 0x00100073; // ebreak
 		printf("已把 0x%x 处的自环替换成 ebreak\n", halt_addr);
 	}

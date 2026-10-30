@@ -7,14 +7,13 @@
 
 | 文件 | 说明 |
 |---|---|
-| `EMU.c` | 解释器主程序（跑手写小镜像，补丁地址写死 `0xc`） |
-| `EMU_mem.c` | 专用副本：镜像同时载入 RAM + 补丁在 `0x1218` + 结束时 dump GPR 和结果区 |
-| `makefile` | `make` 会为每个 `.c` 生成同名可执行文件 |
+| `EMU_mem.c` | 解释器主程序：镜像同时载入 ROM/RAM + 结束时 dump GPR 和结果区 |
+| `makefile` | 和 `kernels/screensaver` 一样，直接 `include $(AM_HOME)/Makefile` |
 | `hex2bin.py` | 工具①：Logisim hex → 裸二进制 |
 | `find_halt.py` | 工具②：自动定位 `halt` |
 | `*.hex` | Logisim `v3.0 hex words addressed` 镜像（`mem` / `sum` / `vga` / `prog_good`） |
 | `*.bin` | 转换出的裸镜像，或手写的小镜像 |
-| `EMU` / `EMU_mem` | 编译产物 |
+| `build/EMU_mem-native.elf` | 编译产物（AM native 平台的完整运行时，含 SDL 显示） |
 
 ## 工具用法
 
@@ -78,10 +77,15 @@ python3 find_halt.py mem.bin            # -> 0x1218
 # 3. 把地址填进 EMU_mem.c 的运行时补丁
 #    ROM[0x1218 >> 2] = 0x00100073;
 
-# 4. 编译并运行
-clang -Wall -g -o EMU_mem EMU_mem.c
-./EMU_mem mem.bin
+# 4. 编译并运行（和 screensaver 一样走 AM 的 Makefile，产物在 build/ 下）
+make ARCH=native                                # -> build/EMU_mem-native.elf
+mainargs="mem.bin 0x1218" make ARCH=native run  # 编译 + 运行
+./build/EMU_mem-native.elf                      # 也可直接跑（默认镜像 vga.bin）
 ```
+
+> `main` 的签名是 AM 规定的 `int main(const char *args)`：AM 的 native 平台由
+> `am/src/native/platform.c` 的构造函数用 `main(getenv("mainargs") ?: "")` 调用
+> kernel，拿不到 `argc/argv`。所以参数用 `mainargs` 传入，格式是“镜像名 [halt 地址]”。
 
 ## 已知镜像
 
