@@ -67,7 +67,7 @@ void __am_gpu_fbdraw(AM_GPU_FBDRAW_T *);
 
 /* AM 的 ioe 分发：我们只用得到 GPU 这一路 */
 void ioe_write(int reg, void *buf) {
-	if (reg == AM_GPU_FBDRAW) __am_gpu_fbdraw(buf);
+	if (reg == AM_GPU_FBDRAW)   __am_gpu_fbdraw(buf);
 }
 void ioe_read(int reg, void *buf) { (void)reg; (void)buf; }
 
