@@ -74,18 +74,10 @@ static inline int in_vga(uint32_t addr) {
 }
 
 /* 写显存：图形显示只用 SW（一个字一个像素），所以没有字节使能那一套。
- * mkvga.py 只发 SW；vga.bin 实测写入显存的指令也是 100% SW（SW=65536, SB=0）。
  */
 static void vga_store(uint32_t addr, uint32_t data) {
 	VGA_VM[(addr - VGA_BASE) >> 2] = data & 0x00FFFFFFu;   /* 硬件丢高 8 位 */
 	vga_dirty = 1;
-}
-
-/* 读显存（程序有可能把像素读回来） */
-static uint32_t vga_load(uint32_t addr, int nbytes) {
-	uint32_t off = addr - VGA_BASE;
-	if (nbytes == 4) return VGA_VM[off >> 2];
-	return (VGA_VM[off >> 2] >> ((off & 3) * 8)) & 0xFFu;
 }
 
 /* 显示已经交给 AM 的 GPU 接口，不再自己写 BMP 导出 */
@@ -154,13 +146,13 @@ void inst_cycle(void){
 		switch (funct3) {
 			case 0b010:{
 				uint32_t a = GPR[rs1] + (uint32_t)imm;
-				GPR[rd] = in_vga(a) ? vga_load(a, 4) : RAM[a >> 2]; // 改：基址用 GPR[rs1]，并按字寻址
+				GPR[rd] = RAM[a >> 2]; // 改：基址用 GPR[rs1]，并按字寻址
                 break;
 			}
 
             case 0b100:{
                 uint32_t addr = GPR[rs1] + imm; // 改：按字节地址取对应字节
-                GPR[rd] = in_vga(addr) ? vga_load(addr, 1) : (RAM[addr >> 2] >> ((addr & 3) * 8)) & 0xff;
+                GPR[rd] = (RAM[addr >> 2] >> ((addr & 3) * 8)) & 0xff;
                 break;
             }
 
@@ -245,9 +237,9 @@ int main(){
 	for (size_t i = 0; i < size / 4; i++) RAM[i] = ROM[i];
 
 	//运行时环境补丁。约定程序结束前把状态码写入a0，并停在halt处。
-	//把 halt 处的自环换成 ebreak（地址由 find_halt.py 给出，换镜像时改这里）。
 	//注意：vga.bin 自带 ebreak，不能补丁（0x1218 落在它的代码里，补了会跑飞），
-	//      所以这行默认注释掉；测 mem.bin / sum.bin 时再放开并改成对应地址。
+	//所以下面这行默认注释掉；测 mem.bin / sum.bin 时再放开并改成对应地址。
+
 	//ROM[0x1218 >> 2] = 0x00100073; // ebreak
   	
 	//什么时候循环会一直运行？
