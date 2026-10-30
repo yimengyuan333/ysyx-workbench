@@ -13,3 +13,6 @@ _*
 *~
 build/
 !.gitignore
+!*.py
+!makefile
+!*.hex
